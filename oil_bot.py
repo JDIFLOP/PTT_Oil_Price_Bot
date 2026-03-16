@@ -6,103 +6,74 @@ from datetime import datetime
 DB_FILE = "last_price.json"
 
 def get_oil_prices():
-    # 🔗 Sources
-    sources = [
-        "https://www.bangchak.co.th/api/oilprice",
-        "https://thai-oil-price.vercel.app/api/prices"
-    ]
+    # ใช้ API ตรงของบางจาก เพราะมีข้อมูล 'tomorrow' ที่แม่นยำที่สุด
+    url = "https://www.bangchak.co.th/api/oilprice"
     
-    raw_data = None
-    source_used = ""
-
-    for url in sources:
-        try:
-            response = requests.get(url, timeout=20)
-            if response.status_code == 200:
-                raw_data = response.json()
-                source_used = url
-                break
-        except: continue
-
-    if not raw_data:
-        return "❌ Error: All oil price sources are currently unavailable."
-
-    # --- 📂 Load History ---
-    last_prices = {}
-    if os.path.exists(DB_FILE):
-        try:
-            with open(DB_FILE, "r") as f:
-                last_prices = json.load(f)
-        except: pass
-
-    # --- 📊 Data Processing ---
-    report_date = datetime.now().strftime("%d %B %Y")
-    msg = f"📅 Date: {report_date}\n"
-    msg += "⛽ PTT & Bangchak Oil Price Report\n"
-    msg += "----------------------------------\n"
-
-    items = []
-    
-    # 🔍 Extraction Logic
-    if "bangchak" in source_used:
-        data_part = raw_data.get('data', {})
-        # ลองหาพรุ่งนี้ก่อน ถ้าไม่มีเอาวันนี้
-        raw_list = data_part.get('tomorrow', {}).get('items', [])
-        if not raw_list:
-            raw_list = data_part.get('today', {}).get('items', [])
+    try:
+        response = requests.get(url, timeout=30)
+        response.raise_for_status()
+        data = response.json()
         
-        for i in raw_list:
-            items.append({'name': i.get('oil_name'), 'price': i.get('price')})
-    else:
-        # สำหรับ API สำรอง (Vercel)
-        # พยายามหา Key ที่ชื่อ PTT หรือข้อมูลชั้นนอกสุด
-        d = raw_data.get('data', raw_data)
-        ptt = d.get('ptt', d.get('PTT', d))
+        # เจาะจงไปที่ข้อมูลของ "วันพรุ่งนี้" (Tomorrow)
+        tomorrow_items = data.get('data', {}).get('tomorrow', {}).get('items', [])
         
-        if isinstance(ptt, dict):
-            for k, v in ptt.items():
-                items.append({'name': k.replace('_', ' ').title(), 'price': v})
+        # เช็คว่ามีประกาศราคาใหม่หรือยัง (ถ้าราคาเป็น 0 หรือ List ว่าง แสดงว่ายังไม่ประกาศ)
+        is_updated = any(float(i.get('price', 0)) > 0 for i in tomorrow_items)
 
-    # --- 📝 Build Message ---
-    current_save = {}
-    valid_count = 0
-    
-    for item in items:
-        name = item.get('name')
-        try:
-            price = float(item.get('price', 0))
-        except: continue
+        if not is_updated:
+            return "📢 No price changes announced yet for tomorrow."
 
-        if price <= 0 or not name: continue
+        # โหลดราคาเดิม (ราคาของวันนี้) มาเทียบ
+        last_prices = {}
+        if os.path.exists(DB_FILE):
+            try:
+                with open(DB_FILE, "r") as f:
+                    last_prices = json.load(f)
+            except: pass
 
-        valid_count += 1
-        current_save[name] = price
-        
-        last_p = last_prices.get(name)
-        change = ""
-        if last_p is not None:
-            diff = price - last_p
-            if diff > 0: change = f" (⬆️ +{diff:.2f})"
-            elif diff < 0: change = f" (⬇️ {diff:.2f})"
-            else: change = " (Unchanged)"
-        
-        msg += f"• {name}: {price:.2f} THB{change}\n"
+        report_date = datetime.now().strftime("%d %B %Y")
+        msg = f"🚀 *TOMORROW'S PRICE* ({report_date})\n"
+        msg += "Effective at 05:00 AM\n"
+        msg += "----------------------------------\n"
 
-    if valid_count > 0:
+        current_save = {}
+        for item in tomorrow_items:
+            name = item.get('oil_name')
+            try:
+                price = float(item.get('price', 0))
+            except: continue
+
+            if price <= 0: continue
+
+            current_save[name] = price
+            
+            # เปรียบเทียบกับราคาเดิมในระบบ
+            last_p = last_prices.get(name)
+            change = ""
+            if last_p is not None:
+                diff = price - last_p
+                if diff > 0: change = f" ⬆️ *+{diff:.2f}*"
+                elif diff < 0: change = f" ⬇️ *{diff:.2f}*"
+                else: change = " (Stable)"
+            
+            msg += f"• {name}: {price:.2f} THB{change}\n"
+
+        # บันทึกราคาพรุ่งนี้ไว้ เพื่อเป็นฐานข้อมูลไว้เทียบในวันถัดไป
         with open(DB_FILE, "w") as f:
             json.dump(current_save, f)
+            
         return msg
-    
-    return "❌ Error: Data extraction failed. (No valid items found)"
+
+    except Exception as e:
+        return f"❌ Error: {str(e)}"
 
 def send_telegram(content):
     token = os.environ.get('TELEGRAM_TOKEN')
     chat_id = os.environ.get('TELEGRAM_CHAT_ID')
     url = f"https://api.telegram.org/bot{token}/sendMessage"
-    try:
-        requests.post(url, data={"chat_id": chat_id, "text": content}, timeout=20)
-    except: pass
+    # ใช้ parse_mode='Markdown' เพื่อให้ตัวหนาและ Emoji แสดงผลสวยงาม
+    requests.post(url, data={"chat_id": chat_id, "text": content, "parse_mode": "Markdown"}, timeout=20)
 
 if __name__ == "__main__":
-    report = get_oil_prices()
-    send_telegram(report)
+    message = get_oil_prices()
+    send_telegram(message)
