@@ -1,0 +1,41 @@
+name: Daily Oil Telegram Alert
+
+on:
+  schedule:
+    # รันทุกวันเวลา 18:10 น. (เวลาไทย)
+    - cron: '10 11 * * *'
+  workflow_dispatch: # เพิ่มปุ่มกดรันเองเพื่อทดสอบบนมือถือ
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    # เพิ่มสิทธิ์ให้บอทสามารถเขียนไฟล์ (Write) เพื่อบันทึกราคาล่าสุดไว้เปรียบเทียบ
+    permissions:
+      contents: write
+      
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.9'
+
+      - name: Install dependencies
+        run: pip install requests
+
+      - name: Run bot script
+        env:
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: python oil_bot.py
+
+      - name: Commit and Push last price
+        run: |
+          git config --global user.name 'github-actions[bot]'
+          git config --global user.email 'github-actions[bot]@users.noreply.github.com'
+          git add last_price.json || echo "No changes to commit"
+          git commit -m "Update last price for comparison" || echo "No changes to commit"
+          git push || echo "No changes to push"
+          
