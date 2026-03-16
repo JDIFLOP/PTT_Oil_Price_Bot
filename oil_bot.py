@@ -6,29 +6,28 @@ from datetime import datetime
 DB_FILE = "last_price.json"
 
 def get_oil_prices():
-    # 🔗 แหล่งข้อมูลหลัก (Direct API) และสำรอง (Fallback API)
+    # 🔗 Sources
     sources = [
         "https://www.bangchak.co.th/api/oilprice",
         "https://thai-oil-price.vercel.app/api/prices"
     ]
     
-    data = None
+    raw_data = None
     source_used = ""
 
     for url in sources:
         try:
             response = requests.get(url, timeout=20)
             if response.status_code == 200:
-                data = response.json()
+                raw_data = response.json()
                 source_used = url
                 break
-        except:
-            continue
+        except: continue
 
-    if not data:
+    if not raw_data:
         return "❌ Error: All oil price sources are currently unavailable."
 
-    # --- 📂 ส่วนการจัดการฐานข้อมูลราคาเดิม ---
+    # --- 📂 Load History ---
     last_prices = {}
     if os.path.exists(DB_FILE):
         try:
@@ -36,26 +35,38 @@ def get_oil_prices():
                 last_prices = json.load(f)
         except: pass
 
-    # --- 📊 ส่วนการดึงข้อมูลและจัดการรูปแบบข้อความ ---
+    # --- 📊 Data Processing ---
     report_date = datetime.now().strftime("%d %B %Y")
     msg = f"📅 Date: {report_date}\n"
     msg += "⛽ PTT & Bangchak Oil Price Report\n"
     msg += "----------------------------------\n"
 
     items = []
-    # จัดการโครงสร้าง JSON ที่ต่างกันของแต่ละ Source
+    
+    # 🔍 Extraction Logic
     if "bangchak" in source_used:
-        items_raw = data.get('data', {}).get('tomorrow', {}).get('items', [])
-        if not items_raw:
-            items_raw = data.get('data', {}).get('today', {}).get('items', [])
-        for i in items_raw:
+        data_part = raw_data.get('data', {})
+        # ลองหาพรุ่งนี้ก่อน ถ้าไม่มีเอาวันนี้
+        raw_list = data_part.get('tomorrow', {}).get('items', [])
+        if not raw_list:
+            raw_list = data_part.get('today', {}).get('items', [])
+        
+        for i in raw_list:
             items.append({'name': i.get('oil_name'), 'price': i.get('price')})
     else:
-        ptt_data = data.get('data', {}).get('ptt', data.get('ptt', {}))
-        for name, price in ptt_data.items():
-            items.append({'name': name.replace('_', ' ').title(), 'price': price})
+        # สำหรับ API สำรอง (Vercel)
+        # พยายามหา Key ที่ชื่อ PTT หรือข้อมูลชั้นนอกสุด
+        d = raw_data.get('data', raw_data)
+        ptt = d.get('ptt', d.get('PTT', d))
+        
+        if isinstance(ptt, dict):
+            for k, v in ptt.items():
+                items.append({'name': k.replace('_', ' ').title(), 'price': v})
 
+    # --- 📝 Build Message ---
     current_save = {}
+    valid_count = 0
+    
     for item in items:
         name = item.get('name')
         try:
@@ -64,9 +75,9 @@ def get_oil_prices():
 
         if price <= 0 or not name: continue
 
+        valid_count += 1
         current_save[name] = price
         
-        # 🔄 เปรียบเทียบราคา
         last_p = last_prices.get(name)
         change = ""
         if last_p is not None:
@@ -77,22 +88,20 @@ def get_oil_prices():
         
         msg += f"• {name}: {price:.2f} THB{change}\n"
 
-    # บันทึกราคาลงไฟล์
-    if current_save:
+    if valid_count > 0:
         with open(DB_FILE, "w") as f:
             json.dump(current_save, f)
         return msg
-    return "❌ Error: Data processing failed."
+    
+    return "❌ Error: Data extraction failed. (No valid items found)"
 
 def send_telegram(content):
     token = os.environ.get('TELEGRAM_TOKEN')
     chat_id = os.environ.get('TELEGRAM_CHAT_ID')
     url = f"https://api.telegram.org/bot{token}/sendMessage"
-    
     try:
         requests.post(url, data={"chat_id": chat_id, "text": content}, timeout=20)
-    except Exception as e:
-        print(f"Failed to send: {e}")
+    except: pass
 
 if __name__ == "__main__":
     report = get_oil_prices()
