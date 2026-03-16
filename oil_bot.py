@@ -10,12 +10,21 @@ def get_oil_prices():
     try:
         response = requests.get(url, timeout=30)
         response.raise_for_status()
-        data = response.json()
-        items = data.get('data', {}).get('items', [])
+        json_data = response.json()
         
+        data_part = json_data.get('data', {})
+        
+        # ลองดึงข้อมูลพรุ่งนี้ก่อน (Tomorrow) ถ้ายังไม่มีค่อยเอาวันนี้ (Today)
+        items = data_part.get('tomorrow', {}).get('items', [])
+        status_label = "Tomorrow's Price"
         if not items:
-            return "Error: No oil data found."
+            items = data_part.get('today', {}).get('items', [])
+            status_label = "Today's Price"
 
+        if not items:
+            return "Error: Could not find oil data in API."
+
+        # โหลดราคาเดิมมาเทียบ
         last_prices = {}
         if os.path.exists(DB_FILE):
             try:
@@ -24,49 +33,45 @@ def get_oil_prices():
             except: pass
 
         report_date = datetime.now().strftime("%d %B %Y")
-        
-        # ค้นหาด้วย Keyword เพื่อป้องกันชื่อ API เปลี่ยน
         msg = f"Date: {report_date}\n"
-        msg += "PTT & Oil Price Report\n"
+        msg += f"Status: {status_label}\n"
         msg += "--------------------------\n"
 
         current_save = {}
-        # รายการที่เราต้องการค้นหา
-        targets = {
-            "95": "Gasohol 95",
-            "91": "Gasohol 91",
-            "E20": "E20",
-            "Diesel B7": "Diesel B7"
-        }
-
         for item in items:
-            oil_name = item.get('oil_name', '')
-            price = float(item.get('price', 0))
-            
-            found_key = None
-            # เช็คว่าชื่อน้ำมันจาก API มีคำที่เราต้องการไหม
-            if "95" in oil_name and "Gasohol" in oil_name: found_key = "Gasohol 95"
-            elif "91" in oil_name and "Gasohol" in oil_name: found_key = "Gasohol 91"
-            elif "E20" in oil_name: found_key = "E20"
-            elif "B7" in oil_name and "Diesel" in oil_name: found_key = "Diesel B7"
+            # ดึงชื่อและราคา (ถ้าไม่มีราคาหรือราคาเป็น 0.00 ให้ข้าม)
+            oil_name = item.get('oil_name', 'Unknown')
+            try:
+                price = float(item.get('price', 0))
+            except:
+                continue
+                
+            if price <= 0:
+                continue
 
-            if found_key:
-                current_save[found_key] = price
-                last_p = last_prices.get(found_key)
-                
-                change = ""
-                if last_p is not None:
-                    diff = price - last_p
-                    if diff > 0: change = f" (+{diff:.2f})"
-                    elif diff < 0: change = f" ({diff:.2f})"
-                    else: change = " (Unchanged)"
-                
-                msg += f"{found_key}: {price:.2f} THB/L{change}\n"
-        
-        with open(DB_FILE, "w") as f:
-            json.dump(current_save, f)
+            # เก็บข้อมูลลง Database
+            current_save[oil_name] = price
             
-        return msg
+            # คำนวณส่วนต่างราคา
+            last_p = last_prices.get(oil_name)
+            change = ""
+            if last_p is not None:
+                diff = price - last_p
+                if diff > 0: change = f" (+{diff:.2f})"
+                elif diff < 0: change = f" ({diff:.2f})"
+                else: change = " (Unchanged)"
+            
+            # เพิ่มข้อมูลลงในข้อความ
+            msg += f"{oil_name}: {price:.2f} THB{change}\n"
+        
+        # บันทึกราคาปัจจุบันลงไฟล์
+        if current_save:
+            with open(DB_FILE, "w") as f:
+                json.dump(current_save, f)
+            return msg
+        else:
+            return "Error: No oil data available to report."
+            
     except Exception as e:
         return f"Source Error: {str(e)}"
 
