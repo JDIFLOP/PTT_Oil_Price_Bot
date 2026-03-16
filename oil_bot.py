@@ -3,8 +3,6 @@ import os
 import json
 from datetime import datetime
 
-DB_FILE = "last_price.json"
-
 def get_oil_prices():
     url = "https://www.bangchak.co.th/api/oilprice"
     try:
@@ -12,57 +10,58 @@ def get_oil_prices():
         response.raise_for_status()
         data = response.json()
         
+        # ดึงข้อมูลส่วน data
         data_part = data.get('data', {})
-        today_items = data_part.get('today', {}).get('items', [])
+        
+        # --- ระบบค้นหาข้อมูลแบบยืดหยุ่น ---
+        # 1. ลองหาใน tomorrow ก่อน
         tomorrow_items = data_part.get('tomorrow', {}).get('items', [])
+        # 2. หาใน today
+        today_items = data_part.get('today', {}).get('items', [])
+        # 3. ถ้ายังไม่เจออีก ให้กวาดทุกอย่างที่อยู่ใน data (เผื่อโครงสร้างเปลี่ยน)
+        if not today_items and not tomorrow_items:
+            # ลองหา Key อื่นๆ ที่อาจมีข้อมูล
+            for key in data_part:
+                if isinstance(data_part[key], dict) and 'items' in data_part[key]:
+                    today_items = data_part[key]['items']
+                    break
 
         if not today_items:
-            return "❌ Error: Could not fetch today's oil prices."
+            return "❌ Error: API structure changed or data is empty."
 
-        # ตรวจสอบว่าพรุ่งนี้มีการปรับราคาไหม (ดูว่ามีราคาพรุ่งนี้ที่ต่างจากวันนี้ไหม)
-        has_tomorrow_announcement = False
-        if tomorrow_items:
-            for t_item in tomorrow_items:
-                t_price = float(t_item.get('price', 0))
-                if t_price > 0:
-                    has_tomorrow_announcement = True
-                    break
+        # ตรวจสอบว่าพรุ่งนี้มีราคาใหม่ไหม
+        has_tomorrow = any(float(i.get('price', 0)) > 0 for i in tomorrow_items)
 
         report_date = datetime.now().strftime("%d %B %Y")
         msg = f"📅 *Oil Price Report: {report_date}*\n"
-        
-        if has_tomorrow_announcement:
-            msg += "🚀 *[NEW] Tomorrow's Price Announced!*\n"
-        else:
-            msg += "✅ *Current Price (No changes for tomorrow)*\n"
-        
+        msg += "🚀 *[Update]* Tomorrow's price check\n" if has_tomorrow else "✅ *Current Price List*\n"
         msg += "----------------------------------\n"
 
-        # วนลูปแสดงราคา
-        # เราจะใช้รายชื่อน้ำมันจากวันนี้เป็นหลัก
+        # แสดงรายการน้ำมัน
+        # วนลูปจากรายการที่เรามี (today_items)
         for item in today_items:
             name = item.get('oil_name')
             try:
-                today_price = float(item.get('price', 0))
+                price = float(item.get('price', 0))
             except: continue
+            
+            if price <= 0: continue
 
-            if today_price <= 0: continue
-
-            # ค้นหาราคาพรุ่งนี้ที่ชื่อตรงกัน
-            tomorrow_price = 0
-            if has_tomorrow_announcement:
+            # เช็คราคาพรุ่งนี้ที่ชื่อตรงกัน
+            next_price = 0
+            if has_tomorrow:
                 for t_item in tomorrow_items:
                     if t_item.get('oil_name') == name:
-                        tomorrow_price = float(t_item.get('price', 0))
+                        next_price = float(t_item.get('price', 0))
                         break
 
-            # ส่วนการแสดงผล
-            if tomorrow_price > 0 and tomorrow_price != today_price:
-                diff = tomorrow_price - today_price
-                change_icon = "⬆️" if diff > 0 else "⬇️"
-                msg += f"• {name}: {today_price:.2f} ➔ *{tomorrow_price:.2f}* ({change_icon} {diff:+.2f})\n"
+            # การแสดงผล
+            if next_price > 0 and next_price != price:
+                diff = next_price - price
+                icon = "⬆️" if diff > 0 else "⬇️"
+                msg += f"• {name}: {price:.2f} ➔ *{next_price:.2f}* ({icon} {diff:+.2f})\n"
             else:
-                msg += f"• {name}: {today_price:.2f} THB\n"
+                msg += f"• {name}: {price:.2f} THB\n"
 
         return msg
 
